@@ -10,34 +10,34 @@ import os
 import urllib.parse as urlp
 
 from bs4 import BeautifulSoup
+import pika
 import requests
-from requests.exceptions import HTTPError
 
-image_urls = set()
+import settings
 
-# Constants defined here
-# 入口地址
-ENTRY_URL = "http://society.people.com.cn/GB/index.html"
-# 限定爬取的 Domain（人民网通过 Domain 前缀区分频道）
-ALLOWED_DOMAINS = {
-    'society.people.com.cn',  # 社会
-    'legal.people.com.cn',   # 法制
-}
-MAX_THREADS = 30
-IMAGE_DIR = "images"
+Image_Urls = set()
+Channel = None # 消息通道
 
 
 def process_page(page_url: str) -> set[str]:
     """
-    需要提取的内容为：新闻的标题、内容、链接、发布时间、新闻图片（需下载原图）
+    对网页进行提取。需要提取的内容为：新闻的标题、内容、链接、发布时间、新闻图片（需下载原图）
 
     :param page_url str: 文章链接
     """
-    html = requests.get(page_url)
+    try:
+        html = requests.get(page_url)
+        html.raise_for_status()
+    except requests.exceptions.RequestException:
+        print(f"\tHttp Request Failed for: {page_url}")
+        return set()
+
     soup = BeautifulSoup(html.content, features='lxml')
     page = {}
+
     # TODO：根据年份决定对应的 CSS Selector
     try:
+        # 数据提取
         page['link'] = page_url
         page['title'] = soup.select_one('.rm_txt .col-1 h1').text.strip()
         date, source = soup.select_one('.channel .col-1-1').text.split('|')
@@ -51,26 +51,48 @@ def process_page(page_url: str) -> set[str]:
         print(f"\tPaser error occur when procssing: {page_url}")
         return set()
 
-    # 单独处理图片
-    try:
-        page['images'] = [img.attrs['src'] for img in soup.select(
-            '.rm_txt_con.cf img[src]') if img.attrs['src'].startswith('/NMediaFile')]
-        res = urlp.urlparse(page_url)
-        prefix = f"{res.scheme}://{res.hostname}"
-        image_urls.update([prefix + src for src in page['images']])
-    except (AttributeError):
-        page['images'] = []
+    process_page_images(soup, page, page_url)
 
+    # Log info
     print(f"\tTitle: {page['title']}\n\tImage: {page['images']}")
 
-    # 保存到本地
-    filename = ''.join((ch if ch.isalnum() else '_')
-                       for ch in page_url) + 'html.json'
-    with open(filename, 'w', encoding='utf8') as f:
-        json.dump(page, f, ensure_ascii=False)
+    Channel.basic_publish(exchange='',
+                          routing_key=settings.QUEUE_NAME,
+                          body=json.dumps(page),
+                          properties=pika.BasicProperties(
+                              delivery_mode=2
+                          ))
+    # # 保存到本地
+    # filename = ''.join((ch if ch.isalnum() else '_')
+    #                    for ch in page_url) + 'html.json'
+    # # write file in json
+    # with open(filename, 'w', encoding='utf8') as f:
+    #     json.dump(page, f, ensure_ascii=False)
 
-    # write file in json
     return select_internal_link(soup, page_url)
+
+
+def process_page_images(soup: BeautifulSoup, page: dict, page_url: str):
+    """
+    处理文章中的图片
+
+    :param soup BeautifulSoup: 网页的 DOM 树
+    :param page dict: 保存提取出的信息的字典
+    :param page_url str: 网页的 URL
+    """
+    # 单独处理图片
+    try:
+        # 抓取文章图片
+        page['images'] = [img.attrs['src'] for img in soup.select(
+            '.rm_txt_con.cf img[src]') if img.attrs['src'].startswith('/NMediaFile')]
+
+        # 更新 image_urls
+        res = urlp.urlparse(page_url)
+        prefix = f"{res.scheme}://{res.hostname}"
+        Image_Urls.update([prefix + src for src in page['images']])
+    except (AttributeError):
+        print(f"\tImage Paser error occur when procssing: {page_url}")
+        page['images'] = []
 
 
 def select_internal_link(soup: BeautifulSoup, url: str) -> set[str]:
@@ -98,7 +120,7 @@ def select_internal_link(soup: BeautifulSoup, url: str) -> set[str]:
             # 解析出 Domain
             domain = urlp.urlparse(href).hostname
             # 如果主题是社会或法制
-            if domain in ALLOWED_DOMAINS:
+            if domain in settings.ALLOWED_DOMAINS:
                 links.add(href)
         # 如果是相对路径
         elif href.startswith('/'):
@@ -118,21 +140,24 @@ def download_image(image_url: str):
     print(f"Downloading: {image_url}")
     image = requests.get(image_url)
     filename = urlp.urlparse(image_url).path.replace('/', '_')
-    store_path = f"{IMAGE_DIR}/{filename}"
+    store_path = f"{settings.IMAGE_DIR}/{filename}"
     with open(store_path, 'wb') as f:
         f.write(image.content)
 
 
 if __name__ == "__main__":
-    response = requests.get(ENTRY_URL)
+    # connect to channel
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters('localhost'))
+    Channel = connection.channel()
+    # declare a queue
+    Channel.queue_declare(queue=settings.QUEUE_NAME, durable=True)
 
-    if not response.ok or response.content is None:
-        raise HTTPError
-
+    response = requests.get(settings.ENTRY_URL)
     soup = BeautifulSoup(response.content, features='lxml')
-    unvisited_urls = select_internal_link(soup, ENTRY_URL)
+    unvisited_urls = select_internal_link(soup, settings.ENTRY_URL)
 
-    visited_urls = set(ENTRY_URL)
+    visited_urls = set(settings.ENTRY_URL)
     # 执行 BFS
     total = 0
     try:
@@ -147,13 +172,16 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Detech keyboard interruption, exit...")
 
+    print("Close Connection...")
+    connection.close()
+
     # 处理图片下载
-    if not os.path.exists(IMAGE_DIR):
-        os.makedirs(IMAGE_DIR)
+    if not os.path.exists(settings.IMAGE_DIR):
+        os.makedirs(settings.IMAGE_DIR)
 
     # 使用多线程加速下载
-    threads = min(MAX_THREADS, len(image_urls))
+    threads = min(settings.MAX_THREADS, len(Image_Urls))
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-        executor.map(download_image, image_urls)
+        executor.map(download_image, Image_Urls)
 
-    print(f"Total: {total}")
+    print(f"Total: {total}, Image downloaded: {len(Image_Urls)}")
