@@ -40,6 +40,7 @@ def process_page(page_url: str) -> set[str]:
         # 数据提取
         page['link'] = page_url
         page['title'] = soup.select_one('.rm_txt .col-1 h1').text.strip()
+        # use ,
         date, source = soup.select_one('.channel .col-1-1').text.split('|')
         page['metadata'] = {
             'date': date.strip(),
@@ -160,6 +161,7 @@ if __name__ == "__main__":
     visited_urls = set(settings.ENTRY_URL)
     # 执行 BFS
     total = 0
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     try:
         while unvisited_urls:
             unvisited_url = unvisited_urls.pop()
@@ -169,6 +171,27 @@ if __name__ == "__main__":
             visited_urls.add(unvisited_url)
             unvisited_urls.update(internal_urls - visited_urls)
             total += 1
+
+            # 失败的并发尝试
+            # works = {}
+            # for _ in range(5):
+            #     try: 
+            #         unvisited_url = unvisited_urls.pop()
+            #     except Exception:
+            #         break
+
+            #     works[executor.submit(process_page, unvisited_url)] = unvisited_url
+            #     print(f"{unvisited_url}")
+
+            # for future in concurrent.futures.as_completed(works):
+            #     url = works[future]
+            #     try:
+            #         internal_urls = future.result()
+            #         visited_urls.add(url)
+            #         unvisited_urls.update(internal_urls - visited_urls)
+            #     except Exception:
+            #         pass
+
     except KeyboardInterrupt:
         print("Detech keyboard interruption, exit...")
 

@@ -26,17 +26,17 @@ def callback(ch, method, properties, body):
     print(f"Document inserted with id: {res.inserted_id}")
 
     # 保存到本地
-    # if len(pages) >= settings.THRESHOLD:
-    #     print("Dump all pages")
-    #     while pages:
-    #         p = pages.pop()
-    #         filename = ''.join((ch if ch.isalnum() else '_')
-    #                            for ch in p['link']) + 'html.json'
-    #         # write file in json
-    #         with open(filename, 'w', encoding='utf8') as f:
-    #             json.dump(p, f, ensure_ascii=False)
+    if len(pages) >= settings.THRESHOLD:
+        print("Dump all pages")
+        while pages:
+            p = pages.pop()
+            filename = ''.join((ch if ch.isalnum() else '_')
+                               for ch in p['link']) + 'html.json'
+            # write file in json
+            with open(filename, 'w', encoding='utf8') as f:
+                json.dump(p, f, ensure_ascii=False)
 
-    #         print(f"Store file {filename}")
+            print(f"Store file {filename}")
 
 if __name__ == '__main__':
     try:
