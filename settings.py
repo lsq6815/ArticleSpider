@@ -13,3 +13,12 @@ ALLOWED_DOMAINS = {
 MAX_THREADS = 30
 # 图片的存储路径
 IMAGE_DIR = "images"
+
+# Mongodb hostname
+MONGODB_HOSTNAME = 'localhost'
+# Mongodb port
+MONGODB_PORT = 27017
+# Mongodb database
+MONGODB_DB = 'scraper'
+# Mongodb collection
+MONGODB_COLLECTION = 'peoplecomcn'
